@@ -126,6 +126,8 @@ public class ShuffleClientImpl extends ShuffleClient {
   private final boolean authEnabled;
   private final TransportConf dataTransportConf;
 
+  private ShuffleClientMetricsReporter metricsReporter;
+
   private final ThreadLocal<Compressor> compressorThreadLocal =
       new ThreadLocal<Compressor>() {
         @Override
@@ -680,7 +682,10 @@ public class ShuffleClientImpl extends ShuffleClient {
 
   protected void limitMaxInFlight(String mapKey, PushState pushState, String hostAndPushPort)
       throws IOException {
+    long start = System.nanoTime();
     boolean reachLimit = pushState.limitMaxInFlight(hostAndPushPort);
+    if (metricsReporter != null)
+      metricsReporter.reportCongestionTime(mapKey, System.nanoTime() - start);
 
     if (reachLimit) {
       throw new CelebornIOException(
@@ -692,7 +697,10 @@ public class ShuffleClientImpl extends ShuffleClient {
   }
 
   protected void limitZeroInFlight(String mapKey, PushState pushState) throws IOException {
+    long start = System.nanoTime();
     boolean reachLimit = pushState.limitZeroInFlight();
+    if (metricsReporter != null)
+      metricsReporter.reportCongestionTime(mapKey, System.nanoTime() - start);
 
     if (reachLimit) {
       throw new CelebornIOException(
@@ -941,7 +949,12 @@ public class ShuffleClientImpl extends ShuffleClient {
     if (shuffleCompressionEnabled) {
       // compress data
       final Compressor compressor = compressorThreadLocal.get();
+      long start = System.nanoTime();
       compressor.compress(data, offset, length);
+      if (metricsReporter != null) {
+        long duration = System.nanoTime() - start;
+        metricsReporter.reportCompressionTime(mapKey, duration);
+      }
 
       data = compressor.getCompressedBuffer();
       offset = 0;
@@ -1799,6 +1812,11 @@ public class ShuffleClientImpl extends ShuffleClient {
   @Override
   public void setExtension(byte[] extension) {
     this.extension = extension;
+  }
+
+  @Override
+  public void updateReporter(ShuffleClientMetricsReporter reporter) {
+    this.metricsReporter = reporter;
   }
 
   boolean mapperEnded(int shuffleId, int mapId) {

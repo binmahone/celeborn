@@ -70,6 +70,9 @@ public class DummyShuffleClient extends ShuffleClient {
   public void setExtension(byte[] extension) {}
 
   @Override
+  public void updateReporter(ShuffleClientMetricsReporter reporter) {}
+
+  @Override
   public int pushData(
       int shuffleId,
       int mapId,

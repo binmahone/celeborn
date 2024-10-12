@@ -18,15 +18,18 @@
 package org.apache.spark.shuffle.celeborn;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.celeborn.client.ShuffleClientMetricsReporter;
 import org.apache.spark.*;
 import org.apache.spark.internal.config.package$;
 import org.apache.spark.launcher.SparkLauncher;
 import org.apache.spark.rdd.DeterministicLevel;
 import org.apache.spark.shuffle.*;
 import org.apache.spark.shuffle.sort.SortShuffleManager;
+import org.apache.spark.sql.execution.metric.SQLShuffleWriteMetricsReporter;
 import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.util.Utils;
 import org.slf4j.Logger;
@@ -203,6 +206,9 @@ public class SparkShuffleManager implements ShuffleManager {
     if (shuffleClient != null) {
       shuffleIdTracker.unregisterAppShuffleId(shuffleClient, appShuffleId);
     }
+
+    mapKeyToMetricsReporter.entrySet().removeIf(
+        entry -> entry.getKey().startsWith(appShuffleId + "-"));
     return true;
   }
 
@@ -228,13 +234,30 @@ public class SparkShuffleManager implements ShuffleManager {
     }
   }
 
+  Map<String, WrappedShuffleWriteMetricsReporter> mapKeyToMetricsReporter =
+      new ConcurrentHashMap<>();
+
   @Override
   public <K, V> ShuffleWriter<K, V> getWriter(
       ShuffleHandle handle, long mapId, TaskContext context, ShuffleWriteMetricsReporter metrics) {
     try {
       if (handle instanceof CelebornShuffleHandle) {
+
+        if (!(metrics instanceof SQLShuffleWriteMetricsReporter)) {
+          throw new IllegalArgumentException(
+              "Celeborn only supports SQLShuffleWriteMetricsReporter, but got " + metrics.getClass());
+        }
+
+        WrappedShuffleWriteMetricsReporter metricsReporter =
+            new WrappedShuffleWriteMetricsReporter((SQLShuffleWriteMetricsReporter) metrics);
+        String mapKey = org.apache.celeborn.common.util.Utils.makeMapKey(
+            handle.shuffleId(), context.partitionId(), context.attemptNumber());
+
         @SuppressWarnings("unchecked")
         CelebornShuffleHandle<K, V, ?> h = ((CelebornShuffleHandle<K, V, ?>) handle);
+
+        mapKeyToMetricsReporter.put(mapKey, metricsReporter);
+
         shuffleClient =
             ShuffleClient.get(
                 h.appUniqueId(),
@@ -243,6 +266,17 @@ public class SparkShuffleManager implements ShuffleManager {
                 celebornConf,
                 h.userIdentifier(),
                 h.extension());
+        shuffleClient.updateReporter(new ShuffleClientMetricsReporter() {
+          @Override
+          public void reportCompressionTime(String mapKey, long time) {
+            mapKeyToMetricsReporter.get(mapKey).incCompressTime(time);
+          }
+
+          @Override
+          public void reportCongestionTime(String mapKey, long time) {
+            mapKeyToMetricsReporter.get(mapKey).incCongestionTime(time);
+          }
+        });
         int shuffleId = SparkUtils.celebornShuffleId(shuffleClient, h, context, true);
         shuffleIdTracker.track(h.shuffleId(), shuffleId);
 
@@ -284,10 +318,12 @@ public class SparkShuffleManager implements ShuffleManager {
           if (COLUMNAR_SHUFFLE_CLASSES_PRESENT && celebornConf.columnarShuffleEnabled()) {
             logger.info("Creating columnar hash shuffle writer for shuffle {}", shuffleId);
             return SparkUtils.createColumnarHashBasedShuffleWriter(
-                shuffleId, h, context, celebornConf, shuffleClient, metrics, pool);
+                shuffleId, h, context, celebornConf, shuffleClient, metricsReporter, pool);
           } else {
             return new HashBasedShuffleWriter<>(
-                shuffleId, h, context, celebornConf, shuffleClient, metrics, pool);
+                shuffleId, h, context, celebornConf, shuffleClient,
+                metricsReporter,
+                pool);
           }
         } else {
           throw new UnsupportedOperationException(

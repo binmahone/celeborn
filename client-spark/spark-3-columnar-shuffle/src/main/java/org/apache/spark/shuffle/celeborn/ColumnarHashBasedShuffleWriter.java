@@ -19,6 +19,7 @@ package org.apache.spark.shuffle.celeborn;
 
 import java.io.IOException;
 
+import org.apache.spark.shuffle.WrappedShuffleWriteMetricsReporter;
 import scala.Product2;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -63,7 +64,7 @@ public class ColumnarHashBasedShuffleWriter<K, V, C> extends HashBasedShuffleWri
       TaskContext taskContext,
       CelebornConf conf,
       ShuffleClient client,
-      ShuffleWriteMetricsReporter metrics,
+      WrappedShuffleWriteMetricsReporter metrics,
       SendBufferPool sendBufferPool)
       throws IOException {
     super(shuffleId, handle, taskContext, conf, client, metrics, sendBufferPool);

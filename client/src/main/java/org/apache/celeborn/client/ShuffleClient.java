@@ -145,6 +145,8 @@ public abstract class ShuffleClient {
    */
   public abstract void setExtension(byte[] extension);
 
+  public abstract void updateReporter(ShuffleClientMetricsReporter reporter);
+
   /**
    * Write data to a specific reduce partition
    *

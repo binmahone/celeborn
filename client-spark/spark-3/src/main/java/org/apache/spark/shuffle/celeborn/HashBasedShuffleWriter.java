@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 import javax.annotation.Nullable;
 
+import org.apache.spark.shuffle.WrappedShuffleWriteMetricsReporter;
 import scala.Option;
 import scala.Product2;
 import scala.reflect.ClassTag;
@@ -37,7 +38,6 @@ import org.apache.spark.annotation.Private;
 import org.apache.spark.scheduler.MapStatus;
 import org.apache.spark.serializer.SerializationStream;
 import org.apache.spark.serializer.SerializerInstance;
-import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.ShuffleWriter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.execution.UnsafeRowSerializer;
@@ -65,7 +65,7 @@ public class HashBasedShuffleWriter<K, V, C> extends ShuffleWriter<K, V> {
   private final int PUSH_BUFFER_MAX_SIZE;
   private final ShuffleDependency<K, V, C> dep;
   private final Partitioner partitioner;
-  private final ShuffleWriteMetricsReporter writeMetrics;
+  private final WrappedShuffleWriteMetricsReporter writeMetrics;
   private final int shuffleId;
   private final int mapId;
   private final TaskContext taskContext;
@@ -98,6 +98,8 @@ public class HashBasedShuffleWriter<K, V, C> extends ShuffleWriter<K, V> {
 
   private final boolean unsafeRowFastWrite;
 
+  private final boolean giantRowAsyncWrite;
+
   // In order to facilitate the writing of unit test code, ShuffleClient needs to be passed in as
   // parameters. By the way, simplify the passed parameters.
   public HashBasedShuffleWriter(
@@ -106,7 +108,7 @@ public class HashBasedShuffleWriter<K, V, C> extends ShuffleWriter<K, V> {
       TaskContext taskContext,
       CelebornConf conf,
       ShuffleClient client,
-      ShuffleWriteMetricsReporter metrics,
+      WrappedShuffleWriteMetricsReporter metrics,
       SendBufferPool sendBufferPool)
       throws IOException {
     this.mapId = taskContext.partitionId();
@@ -121,6 +123,7 @@ public class HashBasedShuffleWriter<K, V, C> extends ShuffleWriter<K, V> {
     this.shuffleClient = client;
 
     unsafeRowFastWrite = conf.clientPushUnsafeRowFastWrite();
+    giantRowAsyncWrite = conf.giantRowAsyncWriteEnabled();
     serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE);
     serOutputStream = serializer.serializeStream(serBuffer);
 
@@ -246,7 +249,14 @@ public class HashBasedShuffleWriter<K, V, C> extends ShuffleWriter<K, V> {
       assert (serializedRecordSize > 0);
 
       if (serializedRecordSize > PUSH_BUFFER_MAX_SIZE) {
-        pushGiantRecord(partitionId, serBuffer.getBuf(), serializedRecordSize);
+        if (giantRowAsyncWrite) {
+          // flushSendBuffer itself inc write time, so no need to inc write time here
+          flushSendBuffer(partitionId, serBuffer.getBuf(), serializedRecordSize);
+        } else {
+          long startTime = System.nanoTime();
+          pushGiantRecord(partitionId, serBuffer.getBuf(), serializedRecordSize);
+          writeMetrics.incWriteTime(System.nanoTime() - startTime);
+        }
       } else {
         int offset = getOrUpdateOffset(partitionId, serializedRecordSize);
         byte[] buffer = getOrCreateBuffer(partitionId);
@@ -367,6 +377,7 @@ public class HashBasedShuffleWriter<K, V, C> extends ShuffleWriter<K, V> {
     mapStatus =
         SparkUtils.createMapStatus(
             bmId, SparkUtils.unwrap(mapStatusLengths), taskContext.taskAttemptId());
+    writeMetrics.incCloseTime(System.nanoTime() - pushMergedDataTime);
   }
 
   private void updateRecordsWrittenMetrics() {

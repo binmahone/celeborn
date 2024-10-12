@@ -1007,6 +1007,9 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def shuffleRangeReadFilterEnabled: Boolean = get(SHUFFLE_RANGE_READ_FILTER_ENABLED)
   def shuffleForceFallbackEnabled: Boolean = get(SPARK_SHUFFLE_FORCE_FALLBACK_ENABLED)
   def checkWorkerEnabled: Boolean = get(CHECK_WORKER_ENABLED)
+
+  def giantRowAsyncWriteEnabled: Boolean = get(GIANT_ROW_ASYNC_WRITE_ENABLED)
+
   def shuffleFallbackPolicy: FallbackPolicy = {
     val fallbackPolicyGiven = FallbackPolicy.valueOf(get(SPARK_SHUFFLE_FALLBACK_POLICY))
     if (shuffleForceFallbackEnabled && FallbackPolicy.AUTO.equals(fallbackPolicyGiven)) {
@@ -5282,4 +5285,11 @@ object CelebornConf extends Logging {
       .booleanConf
       .createWithDefault(false)
 
+  val GIANT_ROW_ASYNC_WRITE_ENABLED: ConfigEntry[Boolean] =
+    buildConf("celeborn.client.spark.shuffle.writer.asyncForGiantRow.enabled")
+      .categories("client")
+      .version("0.5.0")
+      .doc("When `true`, enable async write for giant row")
+      .booleanConf
+      .createWithDefault(false)
 }
